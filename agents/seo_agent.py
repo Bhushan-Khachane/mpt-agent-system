@@ -2,24 +2,23 @@
 """
 SEO Agent
 Generates optimised title, description, tags and hashtags for each video-ready topic.
-Calls Ollama to craft platform-specific metadata.
+Supports: HuggingFace Gemma (Colab GPU), Ollama, or Gemini API.
+Set LLM_BACKEND=hf_gemma | ollama | gemini  (auto-detected if not set)
 """
-import json, logging, os
+import json, logging
 from pathlib import Path
-import requests
+from agents.llm_client import generate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [SEOAgent] %(message)s")
 log = logging.getLogger(__name__)
 
 DATA_DIR = Path("data")
 QUEUE_FILE = DATA_DIR / "topics_queue.json"
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
 
 SEO_PROMPT = """You are an expert YouTube/Instagram SEO specialist.
 For the video topic: "{title}" in the niche: "{niche}"
 
-Generate the following in JSON format only (no markdown, no explanation):
+Generate the following in JSON format only (no markdown fences, no explanation, valid JSON):
 {{
   "youtube_title": "Optimised title under 60 chars with power word",
   "youtube_description": "3-4 sentence description with keywords, include 3 relevant hashtags at end",
@@ -30,17 +29,9 @@ Generate the following in JSON format only (no markdown, no explanation):
 }}"""
 
 
-def call_ollama(prompt: str) -> str:
-    payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False,
-                "options": {"temperature": 0.7, "num_predict": 400}}
-    r = requests.post(OLLAMA_URL, json=payload, timeout=60)
-    r.raise_for_status()
-    return r.json().get("response", "").strip()
-
-
 def generate_seo(topic: dict) -> dict:
     prompt = SEO_PROMPT.format(title=topic["title"], niche=topic.get("niche", "general"))
-    raw = call_ollama(prompt)
+    raw = generate(prompt, max_tokens=500, temperature=0.7)
     try:
         start = raw.find("{")
         end = raw.rfind("}") + 1
@@ -48,7 +39,7 @@ def generate_seo(topic: dict) -> dict:
     except Exception:
         seo_data = {
             "youtube_title": topic["title"][:60],
-            "youtube_description": topic["script"][:200],
+            "youtube_description": topic.get("script", "")[:200],
             "youtube_tags": topic.get("search_terms", [])[:8],
             "instagram_caption": topic["title"] + " #shorts #viral",
             "pinterest_description": topic["title"],
@@ -62,23 +53,19 @@ def generate_seo(topic: dict) -> dict:
 def run_seo_agent(batch_size: int = 5):
     if not QUEUE_FILE.exists():
         return
-
     queue = json.loads(QUEUE_FILE.read_text())
     ready = [t for t in queue if t.get("status") == "video_ready"][:batch_size]
-
     if not ready:
         log.info("No videos ready for SEO.")
         return
-
     for t in ready:
         log.info(f"Generating SEO for: {t['title'][:50]}")
         try:
             generate_seo(t)
-            log.info(f"  SEO metadata ready")
+            log.info("  SEO metadata ready")
         except Exception as e:
             log.error(f"  SEO failed: {e}")
             t["status"] = "seo_failed"
-
     QUEUE_FILE.write_text(json.dumps(queue, indent=2))
 
 
