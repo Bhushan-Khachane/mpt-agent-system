@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-SEO Agent
-Generates optimised title, description, tags and hashtags for each video-ready topic.
-Supports: HuggingFace Gemma (Colab GPU), Ollama, or Gemini API.
-Set LLM_BACKEND=hf_gemma | ollama | gemini  (auto-detected if not set)
+SEO Agent — Gemini-only
+Generates optimised title, description, tags and hashtags via Gemini API.
 """
 import json, logging
 from pathlib import Path
@@ -12,7 +10,7 @@ from agents.llm_client import generate
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [SEOAgent] %(message)s")
 log = logging.getLogger(__name__)
 
-DATA_DIR = Path("data")
+DATA_DIR   = Path("data")
 QUEUE_FILE = DATA_DIR / "topics_queue.json"
 
 SEO_PROMPT = """You are an expert YouTube/Instagram SEO specialist.
@@ -31,21 +29,21 @@ Generate the following in JSON format only (no markdown fences, no explanation, 
 
 def generate_seo(topic: dict) -> dict:
     prompt = SEO_PROMPT.format(title=topic["title"], niche=topic.get("niche", "general"))
-    raw = generate(prompt, max_tokens=500, temperature=0.7)
+    raw    = generate(prompt, max_tokens=500, temperature=0.7)
     try:
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
+        start    = raw.find("{")
+        end      = raw.rfind("}") + 1
         seo_data = json.loads(raw[start:end])
     except Exception:
         seo_data = {
-            "youtube_title": topic["title"][:60],
-            "youtube_description": topic.get("script", "")[:200],
-            "youtube_tags": topic.get("search_terms", [])[:8],
-            "instagram_caption": topic["title"] + " #shorts #viral",
+            "youtube_title":        topic["title"][:60],
+            "youtube_description":  topic.get("script", "")[:200],
+            "youtube_tags":         topic.get("search_terms", [])[:8],
+            "instagram_caption":    topic["title"] + " #shorts #viral",
             "pinterest_description": topic["title"],
-            "thumbnail_text": topic["title"][:30],
+            "thumbnail_text":       topic["title"][:30],
         }
-    topic["seo"] = seo_data
+    topic["seo"]    = seo_data
     topic["status"] = "seo_ready"
     return topic
 

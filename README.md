@@ -1,6 +1,6 @@
 # 🤖 MPT Agent System
 
-> Fully automated AI agent pipeline for [MoneyPrinterTurbo](https://github.com/harry0703/MoneyPrinterTurbo) — researches trending topics, writes scripts with **Gemma 3 4B**, produces stock-footage videos, generates SEO metadata, and cross-posts to YouTube Shorts, Instagram Reels & Facebook Reels across **3 monetisable niches**.
+> Fully automated AI agent pipeline for [MoneyPrinterTurbo](https://github.com/harry0703/MoneyPrinterTurbo) — researches trending topics, writes scripts with **Gemini API**, produces stock-footage videos, generates SEO metadata, and cross-posts to YouTube Shorts, Instagram Reels & Facebook Reels across **3 monetisable niches**.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Bhushan-Khachane/mpt-agent-system/blob/main/colab_runner.ipynb)
 
@@ -10,9 +10,9 @@
 
 | Niche | Sources | Voice | Strategy |
 |-------|---------|-------|----------|
-| **AI & Tech** | TechCrunch, Verge, HuggingFace, r/artificial | GuyNeural | High CPM + SaaS sponsorships |
-| **Home Cleaning / Satisfying** | GoodHousekeeping, r/CleaningTips, Apartment Therapy | JennyNeural | Scale & volume, brand deals |
-| **Money Mindset / Side Hustle** | Investopedia, NYT Business, r/personalfinance | EricNeural | Finance CPM + affiliate income |
+| **AI & Tech** | TechCrunch, The Verge, r/artificial | GuyNeural | High CPM + SaaS sponsorships |
+| **Home Cleaning** | GoodHousekeeping, r/CleaningTips | JennyNeural | Scale & volume, brand deals |
+| **Money Mindset** | Investopedia, r/personalfinance | EricNeural | Finance CPM + affiliate income |
 
 ---
 
@@ -21,62 +21,55 @@
 ```
 [TrendScout] → [ScriptWriter] → [VideoProducer] → [SEOAgent] → [Publisher]
      ↓               ↓                ↓               ↓             ↓
-  RSS/Reddit      Gemma 3 4B       MPT CLI/API     Gemma 3 4B   YouTube +
-  PyTrends        (HF/Ollama/      stock footage   metadata     Instagram +
-  → queue.json     Gemini)         → .mp4          → tags/desc  Facebook Reels
+  RSS/Reddit      Gemini API       MPT CLI/API     Gemini API   YouTube +
+  PyTrends         (scripts)        stock footage   (metadata)   Instagram +
+  → queue.json                      → .mp4                      Facebook Reels
 ```
 
-All agents share `data/topics_queue.json` as a state store.  
-Topics progress: `pending → scripted → video_ready → seo_ready → published`
+---
+
+## 🧠 LLM — Gemini API only
+
+| Env var | Default | Notes |
+|---------|---------|-------|
+| `GEMINI_API_KEY` | **required** | Free at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Switch to `gemini-2.5-flash-preview` for longer outputs |
+
+No local model loading. No GPU required. Works on any CPU machine or free Colab runtime.
 
 ---
 
-## 🧠 LLM Backend — Auto-detected
-
-| Backend | When used | How to force |
-|---------|-----------|---------------|
-| `hf_gemma` | Colab GPU / CUDA available | `LLM_BACKEND=hf_gemma` |
-| `ollama` | Local Ollama server reachable | `LLM_BACKEND=ollama` |
-| `gemini` | `GEMINI_API_KEY` set | `LLM_BACKEND=gemini` |
-
-Model: `google/gemma-3-4b-it` (4-bit quantised, fits T4 free tier)
-
----
-
-## 🚀 Quick Start (Google Colab)
+## 🚀 Quick Start (Google Colab — CPU)
 
 1. Click **Open in Colab** badge above
-2. Set Runtime → **T4 GPU**
-3. Fill in your keys in Step 2 cell
-4. Run all cells top to bottom
+2. Set `GEMINI_API_KEY` in Step 2 cell (free key at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey))
+3. Run all cells — done
 
 ---
 
-## 🚀 Quick Start (Local / Mac)
+## 🚀 Quick Start (Local / Mac M4)
 
 ```bash
 git clone https://github.com/Bhushan-Khachane/mpt-agent-system
 cd mpt-agent-system
 bash setup.sh
 cp .env.example .env
-# Edit .env — set MPT_DIR, PEXELS_API_KEY, channel IDs
+# Edit .env — set GEMINI_API_KEY, MPT_DIR, PEXELS_API_KEY, channel IDs
 python orchestrator.py --dry-run
-python orchestrator.py --steps TrendScout
 python orchestrator.py
 ```
 
 ---
 
-## 📅 Cron Schedule (local)
+## 📅 Cron Schedule
 
 ```
-Every 4 hrs   → TrendScout (fetch new topics)
+Every 4 hrs   → TrendScout
 Every 2 hrs   → ScriptWriter
 8AM/2PM/8PM   → VideoProducer + SEOAgent + Publisher
-Daily 7AM     → Full pipeline
 ```
 
-Add to crontab: `crontab -e` then paste from `crontab.sh`
+Paste from `crontab.sh` into `crontab -e`.
 
 ---
 
@@ -85,14 +78,14 @@ Add to crontab: `crontab -e` then paste from `crontab.sh`
 ```
 mpt-agent-system/
 ├── agents/
-│   ├── llm_client.py       ← unified Gemma/Ollama/Gemini interface
+│   ├── llm_client.py       ← Gemini API wrapper (only LLM dependency)
 │   ├── trend_scout.py      ← RSS + Reddit + PyTrends scraper
-│   ├── script_writer.py    ← LLM script generator
+│   ├── script_writer.py    ← Gemini script generator
 │   ├── video_producer.py   ← MPT CLI/API wrapper
-│   ├── seo_agent.py        ← title/tags/description generator
+│   ├── seo_agent.py        ← Gemini title/tags/description generator
 │   └── publisher.py        ← cross-platform uploader
-├── orchestrator.py         ← master pipeline runner
-├── colab_runner.ipynb      ← Google Colab notebook
+├── orchestrator.py
+├── colab_runner.ipynb      ← Colab notebook (CPU, no GPU)
 ├── setup.sh
 ├── crontab.sh
 └── .env.example
@@ -103,17 +96,12 @@ mpt-agent-system/
 ## ⚙️ Prerequisites
 
 - Python 3.11+
-- [MoneyPrinterTurbo](https://github.com/harry0703/MoneyPrinterTurbo) installed (local or Colab)
-- Pexels API key (free at pexels.com/api)
+- [MoneyPrinterTurbo](https://github.com/harry0703/MoneyPrinterTurbo)
+- **Gemini API key** — free at [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+- Pexels API key — free at [pexels.com/api](https://www.pexels.com/api/)
 - YouTube OAuth credentials per channel
-- (Optional) HuggingFace token for gated models
-- (Optional) Upload-Post.com account for cross-platform posting
 
 ---
-
-## 📊 Expected Output
-
-~9 videos/day across 3 niches (3 per niche), posted to YouTube Shorts + Instagram Reels + Facebook Reels automatically.
 
 ## 📝 License
 
