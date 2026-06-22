@@ -1,106 +1,123 @@
 #!/usr/bin/env python3
 """
 Publisher Agent
-Posts video + SEO metadata to YouTube Shorts, Instagram Reels, Facebook Reels.
-Uses upload-post.com API (MPT native) or direct YouTube Data API v3.
+
+Strategy:
+  1. Try YouTube Data API v3 direct upload (needs token file).
+  2. If no token, log the video path + SEO metadata so you can upload manually.
+
+NOTE: MPT is a video GENERATOR, not a social media poster.
+The upload-post.com integration is available inside MPT's WebUI config
+but is not exposed via CLI. We use YouTube API directly here.
+
+All os.getenv calls are LAZY (inside run_publisher) so they pick up env vars
+set in the Colab Step 2 cell.
 """
-import json, logging, os, time
+import json
+import logging
+import os
+import time
 from pathlib import Path
-import requests
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [Publisher] %(message)s")
 log = logging.getLogger(__name__)
 
-DATA_DIR = Path("data")
+REPO_ROOT  = Path(__file__).resolve().parent.parent
+DATA_DIR   = REPO_ROOT / "data"
 QUEUE_FILE = DATA_DIR / "topics_queue.json"
-MPT_API_URL = os.getenv("MPT_API_URL", "http://localhost:8080")
-
-CHANNEL_MAP = {
-    "ai_tech": {
-        "youtube": os.getenv("YT_CHANNEL_AI", ""),
-        "instagram": os.getenv("IG_ACCOUNT_AI", ""),
-        "facebook": os.getenv("FB_PAGE_AI", ""),
-    },
-    "home_cleaning": {
-        "youtube": os.getenv("YT_CHANNEL_CLEAN", ""),
-        "instagram": os.getenv("IG_ACCOUNT_CLEAN", ""),
-        "facebook": os.getenv("FB_PAGE_CLEAN", ""),
-    },
-    "money_mindset": {
-        "youtube": os.getenv("YT_CHANNEL_MONEY", ""),
-        "instagram": os.getenv("IG_ACCOUNT_MONEY", ""),
-        "facebook": os.getenv("FB_PAGE_MONEY", ""),
-    },
-}
+CREDS_DIR  = REPO_ROOT / "credentials"
 
 
-def post_via_mpt_api(topic: dict) -> dict:
-    """Uses MPT's built-in upload-post.com integration."""
-    niche = topic.get("niche", "ai_tech")
-    seo = topic.get("seo", {})
-    video_path = topic.get("video_path", "")
-
-    payload = {
-        "video_path": video_path,
-        "title": seo.get("youtube_title", topic["title"]),
-        "description": seo.get("youtube_description", ""),
-        "tags": seo.get("youtube_tags", []),
-        "platforms": ["youtube", "instagram"],
-        "channel_ids": CHANNEL_MAP.get(niche, {}),
-        "privacy": "public",
+def _get_channel_map() -> dict:
+    """Read channel IDs lazily so they pick up env vars set after import."""
+    return {
+        "ai_tech": {
+            "youtube":   os.environ.get("YT_CHANNEL_AI", ""),
+            "instagram": os.environ.get("IG_ACCOUNT_AI", ""),
+        },
+        "home_cleaning": {
+            "youtube":   os.environ.get("YT_CHANNEL_CLEAN", ""),
+            "instagram": os.environ.get("IG_ACCOUNT_CLEAN", ""),
+        },
+        "money_mindset": {
+            "youtube":   os.environ.get("YT_CHANNEL_MONEY", ""),
+            "instagram": os.environ.get("IG_ACCOUNT_MONEY", ""),
+        },
     }
 
-    r = requests.post(f"{MPT_API_URL}/api/v1/upload", json=payload, timeout=120)
-    r.raise_for_status()
-    return r.json()
 
-
-def post_to_youtube_direct(topic: dict) -> str:
-    """Direct YouTube Data API v3 upload (fallback)."""
+def _upload_to_youtube(topic: dict) -> str:
+    """Upload to YouTube using OAuth token file."""
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
     from google.oauth2.credentials import Credentials
 
-    niche = topic["niche"]
-    seo = topic.get("seo", {})
-    token_file = f"credentials/youtube_{niche}_token.json"
-    if not Path(token_file).exists():
-        raise FileNotFoundError(f"YouTube token missing: {token_file}")
+    niche      = topic["niche"]
+    seo        = topic.get("seo", {})
+    token_file = CREDS_DIR / f"youtube_{niche}_token.json"
 
-    creds = Credentials.from_authorized_user_file(token_file)
+    if not token_file.exists():
+        raise FileNotFoundError(
+            f"YouTube OAuth token missing: {token_file}\n"
+            "Upload it to the credentials/ folder then re-run Step 7."
+        )
+
+    creds   = Credentials.from_authorized_user_file(str(token_file))
     youtube = build("youtube", "v3", credentials=creds)
 
     body = {
         "snippet": {
-            "title": seo.get("youtube_title", topic["title"])[:100],
+            "title":       seo.get("youtube_title", topic["title"])[:100],
             "description": seo.get("youtube_description", "")[:5000],
-            "tags": seo.get("youtube_tags", [])[:500],
-            "categoryId": "28",
+            "tags":        seo.get("youtube_tags", [])[:500],
+            "categoryId":  "28",
         },
         "status": {"privacyStatus": "public", "madeForKids": False},
     }
-
-    media = MediaFileUpload(topic["video_path"], mimetype="video/mp4", resumable=True)
-    request = youtube.videos().insert(part=",".join(body.keys()), body=body, media_body=media)
+    media   = MediaFileUpload(topic["video_path"], mimetype="video/mp4", resumable=True)
+    request = youtube.videos().insert(
+        part=",".join(body.keys()), body=body, media_body=media
+    )
     response = request.execute()
     return f"https://youtube.com/shorts/{response['id']}"
 
 
-def log_published(topic: dict, result: dict):
+def _log_for_manual_upload(topic: dict):
+    """Save a JSON summary so you can manually upload later."""
+    seo        = topic.get("seo", {})
+    manual_log = DATA_DIR / "manual_upload_queue.json"
+    existing   = json.loads(manual_log.read_text()) if manual_log.exists() else []
+    existing.append({
+        "hash":               topic["hash"],
+        "niche":              topic["niche"],
+        "title":              topic["title"],
+        "video_path":         topic.get("video_path", ""),
+        "youtube_title":      seo.get("youtube_title", topic["title"]),
+        "youtube_description":seo.get("youtube_description", ""),
+        "youtube_tags":       seo.get("youtube_tags", []),
+        "instagram_caption":  seo.get("instagram_caption", ""),
+        "queued_at":          time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    })
+    manual_log.write_text(json.dumps(existing, indent=2))
+    log.info("  Saved to manual_upload_queue.json for manual upload.")
+
+
+def _log_published(topic: dict, result: dict):
     log_file = DATA_DIR / "published_log.json"
     existing = json.loads(log_file.read_text()) if log_file.exists() else []
     existing.append({
-        "hash": topic["hash"],
-        "title": topic["title"],
-        "niche": topic["niche"],
+        "hash":         topic["hash"],
+        "title":        topic["title"],
+        "niche":        topic["niche"],
         "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "result": result,
+        "result":       result,
     })
     log_file.write_text(json.dumps(existing, indent=2))
 
 
 def run_publisher(batch_size: int = 3):
     if not QUEUE_FILE.exists():
+        log.warning("Queue file not found: %s", QUEUE_FILE)
         return
 
     queue = json.loads(QUEUE_FILE.read_text())
@@ -110,26 +127,26 @@ def run_publisher(batch_size: int = 3):
         log.info("No SEO-ready videos to publish.")
         return
 
-    for t in ready:
-        log.info(f"Publishing: [{t['niche']}] {t['title'][:50]}")
-        try:
-            result = post_via_mpt_api(t)
-            t["status"] = "published"
-            t["publish_result"] = result
-            log_published(t, result)
-            log.info(f"  Published successfully")
-        except Exception as e:
-            log.error(f"  Publish failed: {e}")
-            try:
-                url = post_to_youtube_direct(t)
-                t["status"] = "published"
-                t["publish_result"] = {"youtube_url": url}
-                log.info(f"  Fallback YouTube publish: {url}")
-            except Exception as e2:
-                log.error(f"  Fallback also failed: {e2}")
-                t["status"] = "publish_failed"
+    CREDS_DIR.mkdir(parents=True, exist_ok=True)
 
-        time.sleep(15)
+    for t in ready:
+        log.info("Publishing: [%s] %s", t["niche"], t["title"][:50])
+        try:
+            url    = _upload_to_youtube(t)
+            t["status"]         = "published"
+            t["publish_result"] = {"youtube_url": url}
+            _log_published(t, {"youtube_url": url})
+            log.info("  Published: %s", url)
+        except FileNotFoundError as fnf:
+            log.warning("  No token — queuing for manual upload. (%s)", fnf)
+            t["status"] = "pending_manual_upload"
+            _log_for_manual_upload(t)
+        except Exception as exc:
+            log.error("  Publish failed: %s", exc)
+            t["status"] = "publish_failed"
+            t["error"]  = str(exc)
+
+        time.sleep(5)
 
     QUEUE_FILE.write_text(json.dumps(queue, indent=2))
 
