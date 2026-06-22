@@ -2,17 +2,25 @@
 """
 TrendScout Agent — RSS + curated fallback (no Reddit, no blocking).
 Reddit JSON is blocked on Colab IPs. PyTrends silently skipped on 429.
+
+DATA_DIR is resolved relative to THIS FILE so it always points to
+/content/mpt-agent-system/data/ regardless of CWD at import time.
 """
-import json, hashlib, logging
+import json
+import hashlib
+import logging
 from datetime import datetime, timezone
-import feedparser
 from pathlib import Path
+
+import feedparser
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [TrendScout] %(message)s")
 log = logging.getLogger(__name__)
 
-DATA_DIR   = Path("data")
-DATA_DIR.mkdir(exist_ok=True)
+# ✅ Always resolves to repo_root/data/ regardless of CWD
+REPO_ROOT  = Path(__file__).resolve().parent.parent
+DATA_DIR   = REPO_ROOT / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 SEEN_FILE  = DATA_DIR / "seen_topics.json"
 QUEUE_FILE = DATA_DIR / "topics_queue.json"
 
@@ -23,7 +31,6 @@ NICHES = {
             "https://www.theverge.com/rss/index.xml",
             "https://venturebeat.com/feed/",
             "https://tldr.tech/api/rss/ai",
-            "https://huggingface.co/blog/feed.xml",
         ],
         "fallback": [
             "5 AI tools that will replace your entire workflow",
@@ -34,6 +41,8 @@ NICHES = {
             "The AI tool every small business needs right now",
             "3 AI side hustles making 5k per month",
             "How to build an AI agent in 10 minutes",
+            "Best AI tools for content creators in 2026",
+            "How to automate your entire workflow with AI",
         ],
         "pytrends_kw": ["AI tools 2026", "ChatGPT", "AI agent"],
         "script_template": "5 {topic} that will blow your mind in 2026",
@@ -42,7 +51,6 @@ NICHES = {
         "rss": [
             "https://www.goodhousekeeping.com/rss/all.rss",
             "https://www.apartmenttherapy.com/main.rss",
-            "https://www.realsimple.com/feeds/all",
         ],
         "fallback": [
             "Watch this filthy oven become spotless in 60 seconds",
@@ -53,6 +61,8 @@ NICHES = {
             "The one cleaning product that does everything",
             "How to deep clean a couch in under 10 minutes",
             "Morning cleaning routine that keeps your home spotless",
+            "Satisfying kitchen deep clean transformation",
+            "How to remove stains that never come out",
         ],
         "pytrends_kw": ["cleaning hacks", "satisfying cleaning", "deep clean"],
         "script_template": "Satisfying {topic} transformation you wont believe",
@@ -61,7 +71,6 @@ NICHES = {
         "rss": [
             "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
             "https://www.investopedia.com/feedbuilder/feed/getfeed?feedName=rss_articles",
-            "https://feeds.feedburner.com/businessinsider",
         ],
         "fallback": [
             "3 money habits that separate rich from broke",
@@ -72,6 +81,8 @@ NICHES = {
             "How to make your first 1000 dollars online",
             "3 things rich people do that broke people dont",
             "The simplest way to build wealth from scratch",
+            "How to save money when you have none left",
+            "Compound interest explained in 60 seconds",
         ],
         "pytrends_kw": ["side hustle 2026", "passive income", "make money online"],
         "script_template": "3 money habits that {topic} most people ignore this",
@@ -81,8 +92,11 @@ NICHES = {
 
 def load_seen() -> set:
     if SEEN_FILE.exists():
-        data = json.loads(SEEN_FILE.read_text())
-        return set(data) if isinstance(data, list) else set(data.keys())
+        try:
+            data = json.loads(SEEN_FILE.read_text())
+            return set(data) if isinstance(data, list) else set(data.keys())
+        except Exception:
+            pass
     return set()
 
 
@@ -102,10 +116,15 @@ def fetch_rss(urls: list, niche: str) -> list:
             for entry in feed.entries[:8]:
                 title = entry.get("title", "").strip()
                 if len(title) > 10:
-                    topics.append({"title": title, "source": "rss", "niche": niche,
-                                   "score": 200, "url": entry.get("link", "")})
-        except Exception as e:
-            log.warning(f"RSS failed {url}: {e}")
+                    topics.append({
+                        "title":  title,
+                        "source": "rss",
+                        "niche":  niche,
+                        "score":  200,
+                        "url":    entry.get("link", ""),
+                    })
+        except Exception as exc:
+            log.warning("RSS failed %s: %s", url, exc)
     return topics
 
 
@@ -120,10 +139,14 @@ def fetch_pytrends(keywords: list, niche: str) -> list:
                 rising = data["rising"]
                 if rising is not None and len(rising):
                     for _, row in rising.head(3).iterrows():
-                        topics.append({"title": str(row["query"]), "source": "pytrends",
-                                       "niche": niche, "score": int(row.get("value", 50))})
-    except Exception as e:
-        log.info(f"PyTrends skipped ({niche}): {type(e).__name__}")
+                        topics.append({
+                            "title":  str(row["query"]),
+                            "source": "pytrends",
+                            "niche":  niche,
+                            "score":  int(row.get("value", 50)),
+                        })
+    except Exception as exc:
+        log.info("PyTrends skipped (%s): %s", niche, type(exc).__name__)
     return topics
 
 
@@ -141,14 +164,15 @@ def score_topic(t: dict) -> float:
     return base * min(t.get("score", 50), 1000) / 100
 
 
-def run_trend_scout():
+def run_trend_scout() -> list:
+    log.info("DATA_DIR = %s", DATA_DIR)  # visible in Colab output for debug
     seen     = load_seen()
     existing = json.loads(QUEUE_FILE.read_text()) if QUEUE_FILE.exists() else []
     existing_titles = {t["title"].lower() for t in existing}
-    all_topics = []
+    all_topics: list = []
 
     for niche, config in NICHES.items():
-        log.info(f"Scouting niche: {niche}")
+        log.info("Scouting niche: %s", niche)
         raw  = fetch_rss(config["rss"], niche)
         raw += fetch_pytrends(config.get("pytrends_kw", []), niche)
         raw += inject_fallback(niche, config, seen, existing_titles)
@@ -167,7 +191,7 @@ def run_trend_scout():
     top = all_topics[:30]
     QUEUE_FILE.write_text(json.dumps(existing + top, indent=2))
     save_seen(seen)
-    log.info(f"TrendScout added {len(top)} new topics to queue.")
+    log.info("TrendScout added %d new topics to queue. Queue file: %s", len(top), QUEUE_FILE)
     return top
 
 
