@@ -4,7 +4,7 @@ VideoProducer Agent
 
 Calls MPT CLI (cli.py) directly via subprocess.
 Writes a config.toml whose structure matches MPT's config.example.toml exactly:
-  - [app] section: pexels/pixabay keys, llm_provider, subtitle_provider, redis, concurrency
+  - [app] section: pexels/pixabay/coverr keys, llm_provider, subtitle_provider, redis, concurrency
   - Root-level LLM keys (gemini_api_key, gemini_model_name etc.) AFTER [app] block
   - [whisper], [proxy], [azure], [siliconflow], [ui] sections
 
@@ -44,7 +44,7 @@ def _mpt_dir() -> Path:
 def write_mpt_config():
     """
     Write config.toml that exactly matches MPT's config.example.toml structure:
-      [app]          — pexels/pixabay keys, llm_provider, subtitle_provider etc.
+      [app]          — pexels/pixabay/coverr keys, llm_provider, subtitle_provider etc.
       gemini_api_key — root-level (outside [app]) like in example.toml
       [whisper]      — model size and device
       [proxy]        — empty
@@ -55,12 +55,14 @@ def write_mpt_config():
     mpt = _mpt_dir()
     pexels_key   = os.environ.get("PEXELS_API_KEY",  "").strip()
     pixabay_key  = os.environ.get("PIXABAY_API_KEY", "").strip()
+    coverr_key   = os.environ.get("COVERR_API_KEY",  "").strip()
     gemini_key   = os.environ.get("GEMINI_API_KEY",  "").strip()
-    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip()
+    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
     # TOML array syntax for API key lists
     pexels_entry  = f'["{pexels_key}"]'  if pexels_key  else "[]"
     pixabay_entry = f'["{pixabay_key}"]' if pixabay_key else "[]"
+    coverr_entry  = f'["{coverr_key}"]'  if coverr_key  else "[]"
 
     # Structure mirrors config.example.toml exactly:
     #   [app] contains video source, llm_provider, subtitle_provider, redis config
@@ -69,7 +71,7 @@ def write_mpt_config():
 video_source = "pexels"
 pexels_api_keys = {pexels_entry}
 pixabay_api_keys = {pixabay_entry}
-coverr_api_keys = []
+coverr_api_keys = {coverr_entry}
 llm_provider = "gemini"
 subtitle_provider = "edge"
 material_directory = ""
@@ -113,17 +115,25 @@ upload_post_youtube_privacy_status = "public"
     config_path = mpt / "config.toml"
     config_path.write_text(config, encoding="utf-8")
     log.info("Wrote config.toml to %s", config_path)
-    log.info("  llm_provider=gemini  model=%s  pexels=%s",
-             gemini_model, "set" if pexels_key else "MISSING")
+    log.info("  llm_provider=gemini  model=%s  pexels=%s coverr=%s",
+             gemini_model, "set" if pexels_key else "MISSING",
+             "set" if coverr_key else "MISSING")
 
 
 def produce_video(topic: dict) -> Path:
-    """Run MPT CLI for one topic. Returns path to output .mp4."""
-    mpt         = _mpt_dir()
-    niche       = topic.get("niche", "ai_tech")
-    video_terms = topic.get("video_terms", "AI technology,computer screen")
-    voice       = NICHE_VOICES.get(niche, "en-US-GuyNeural")
-    task_id     = topic["hash"]
+    """Run MPT CLI for one topic with minimal overrides.
+
+    We let MoneyPrinterTurbo decide voice, bgm, aspect ratio, clip duration and
+    other stylistic parameters based on its own defaults and config.toml. The
+    only things we pass are:
+      - video_subject  (required by CLI)
+      - video_script   (full narration from ScriptWriter)
+      - video_terms    (comma-separated search keywords, if present)
+      - task_id        (so we can locate the outputs)
+    """
+    mpt     = _mpt_dir()
+    niche   = topic.get("niche", "ai_tech")
+    task_id = topic["hash"]
 
     cli_py = mpt / "cli.py"
     if not cli_py.exists():
@@ -135,31 +145,34 @@ def produce_video(topic: dict) -> Path:
     # Escape double-quotes and newlines in script/subject to avoid shell issues
     subject = topic["video_subject"].replace('"', "'")
     script  = topic["script"].replace('"', "'").replace("\n", " ")
+    terms   = (topic.get("video_terms") or "").strip()
 
     cmd = [
-        sys.executable, str(cli_py),
-        "--video-subject",  subject,
-        "--video-script",   script,
-        "--video-terms",    video_terms,
-        "--video-count",    "1",
-        "--video-source",   "pexels",
-        "--video-aspect",   "9:16",
-        "--voice-name",     voice,
-        "--bgm-type",       "random",
-        "--subtitle-position", "bottom",
-        "--task-id",        task_id,
+        sys.executable,
+        str(cli_py),
+        "--video-subject",
+        subject,
+        "--video-script",
+        script,
+        "--task-id",
+        task_id,
     ]
+    # Only pass search terms if we actually have them; otherwise let MPT
+    # generate keywords from the script/subject automatically.
+    if terms:
+        cmd.extend(["--video-terms", terms])
 
     log.info("Running MPT CLI | task=%s | niche=%s", task_id, niche)
-    log.info("  Subject: %s", subject[:60])
-    log.info("  Terms  : %s", video_terms[:60])
+    log.info("  Subject: %s", subject[:80])
+    if terms:
+        log.info("  Terms  : %s", terms[:80])
 
     result = subprocess.run(
         cmd,
         cwd=str(mpt),
         capture_output=True,
         text=True,
-        timeout=600,
+        timeout=900,
     )
 
     if result.returncode != 0:
@@ -169,7 +182,7 @@ def produce_video(topic: dict) -> Path:
             f"STDERR (last 1000): {result.stderr[-1000:]}"
         )
 
-    log.info("MPT CLI stdout: %s", result.stdout[-300:])
+    log.info("MPT CLI stdout: %s", result.stdout[-400:])
 
     # MPT saves output to storage/tasks/<task_id>/final-*.mp4
     task_dir  = mpt / "storage" / "tasks" / task_id
