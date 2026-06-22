@@ -29,11 +29,9 @@ DATA_DIR  = REPO_ROOT / "data"
 VIDEO_OUT = REPO_ROOT / "videos"
 QUEUE_FILE = DATA_DIR / "topics_queue.json"
 
-NICHE_VOICES = {
-    "ai_tech":       "en-US-GuyNeural",
-    "home_cleaning": "en-US-JennyNeural",
-    "money_mindset": "en-US-EricNeural",
-}
+# Default Gemini TTS voice: use a prebuilt Gemini voice instead of Azure
+# This lets MPT run fully with Gemini (no Azure Speech config required).
+DEFAULT_GEMINI_TTS_VOICE = "gemini:Zephyr-Female"
 
 
 def _mpt_dir() -> Path:
@@ -48,7 +46,7 @@ def write_mpt_config():
       gemini_api_key — root-level (outside [app]) like in example.toml
       [whisper]      — model size and device
       [proxy]        — empty
-      [azure]        — empty
+      [azure]        — empty (no Azure TTS required)
       [siliconflow]  — empty
       [ui]           — upload-post disabled
     """
@@ -64,9 +62,6 @@ def write_mpt_config():
     pixabay_entry = f'["{pixabay_key}"]' if pixabay_key else "[]"
     coverr_entry  = f'["{coverr_key}"]'  if coverr_key  else "[]"
 
-    # Structure mirrors config.example.toml exactly:
-    #   [app] contains video source, llm_provider, subtitle_provider, redis config
-    #   LLM provider keys (gemini_api_key etc.) are ROOT-LEVEL (outside [app])
     config = f"""[app]
 video_source = "pexels"
 pexels_api_keys = {pexels_entry}
@@ -85,7 +80,6 @@ redis_password = ""
 max_concurrent_tasks = 3
 max_queued_tasks = 50
 
-# Gemini LLM settings (root-level, outside [app], as per config.example.toml)
 gemini_api_key = "{gemini_key}"
 gemini_model_name = "{gemini_model}"
 
@@ -115,21 +109,22 @@ upload_post_youtube_privacy_status = "public"
     config_path = mpt / "config.toml"
     config_path.write_text(config, encoding="utf-8")
     log.info("Wrote config.toml to %s", config_path)
-    log.info("  llm_provider=gemini  model=%s  pexels=%s coverr=%s",
-             gemini_model, "set" if pexels_key else "MISSING",
-             "set" if coverr_key else "MISSING")
+    log.info("  llm_provider=gemini  model=%s  pexels=%s",
+             gemini_model, "set" if pexels_key else "MISSING")
 
 
 def produce_video(topic: dict) -> Path:
     """Run MPT CLI for one topic with minimal overrides.
 
-    We let MoneyPrinterTurbo decide voice, bgm, aspect ratio, clip duration and
-    other stylistic parameters based on its own defaults and config.toml. The
-    only things we pass are:
-      - video_subject  (required by CLI)
-      - video_script   (full narration from ScriptWriter)
-      - video_terms    (comma-separated search keywords, if present)
-      - task_id        (so we can locate the outputs)
+    We let MoneyPrinterTurbo decide most stylistic parameters from config.toml.
+    To avoid Azure TTS completely, we explicitly pass a Gemini TTS voice name.
+
+    Passed CLI args:
+      - video_subject: topic title
+      - video_script : full narration from ScriptWriter
+      - video_terms  : comma-separated search keywords (optional)
+      - voice_name   : Gemini TTS voice (gemini:Zephyr-Female)
+      - task_id      : used to locate outputs
     """
     mpt     = _mpt_dir()
     niche   = topic.get("niche", "ai_tech")
@@ -154,16 +149,18 @@ def produce_video(topic: dict) -> Path:
         subject,
         "--video-script",
         script,
+        "--voice-name",
+        DEFAULT_GEMINI_TTS_VOICE,
         "--task-id",
         task_id,
     ]
-    # Only pass search terms if we actually have them; otherwise let MPT
-    # generate keywords from the script/subject automatically.
+
     if terms:
         cmd.extend(["--video-terms", terms])
 
     log.info("Running MPT CLI | task=%s | niche=%s", task_id, niche)
     log.info("  Subject: %s", subject[:80])
+    log.info("  Voice  : %s", DEFAULT_GEMINI_TTS_VOICE)
     if terms:
         log.info("  Terms  : %s", terms[:80])
 
