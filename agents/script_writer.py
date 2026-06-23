@@ -68,12 +68,29 @@ KEYWORD_MAP = {
 }
 
 
+def _post_process_script(raw: str) -> str:
+    """Strip prompt-like meta and keep only the actual narration script.
+
+    Gemini sometimes returns the instructions and bullet points before the
+    final draft. We heuristically cut at markers like "*Draft:*" or "Draft:".
+    If no marker is found, we return the raw text.
+    """
+    text = raw.strip()
+    lower = text.lower()
+    for marker in ["*draft*:", "*draft:", "draft:", "final script:"]:
+        idx = lower.find(marker)
+        if idx != -1:
+            return text[idx + len(marker):].strip()
+    return text
+
+
 def generate_script(topic: dict) -> dict:
     niche  = topic.get("niche", "ai_tech")
     tmpl   = NICHE_PROMPTS.get(niche, NICHE_PROMPTS["ai_tech"])
     prompt = tmpl.format(title=topic["title"])
     # Allow longer outputs so scripts can drive ~20–40s videos
-    script = generate(prompt, max_tokens=400, temperature=0.8)
+    raw_script = generate(prompt, max_tokens=400, temperature=0.8)
+    script     = _post_process_script(raw_script)
     topic["script"]        = script
     topic["video_subject"] = topic["title"]
     # comma-joined string for MPT CLI --video-terms
