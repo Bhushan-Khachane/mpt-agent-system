@@ -29,9 +29,13 @@ DATA_DIR  = REPO_ROOT / "data"
 VIDEO_OUT = REPO_ROOT / "videos"
 QUEUE_FILE = DATA_DIR / "topics_queue.json"
 
-# Default Gemini TTS voice: use a prebuilt Gemini voice instead of Azure
-# This lets MPT run fully with Gemini (no Azure Speech config required).
-DEFAULT_GEMINI_TTS_VOICE = "gemini:Zephyr-Female"
+# Use Edge TTS voices from MoneyPrinterTurbo's built-in Azure V1 path.
+# This avoids Gemini TTS errors and keeps TTS entirely inside MPT.
+NICHE_VOICES = {
+    "ai_tech":       "en-US-GuyNeural",
+    "home_cleaning": "en-US-JennyNeural",
+    "money_mindset": "en-US-EricNeural",
+}
 
 
 def _mpt_dir() -> Path:
@@ -46,7 +50,7 @@ def write_mpt_config():
       gemini_api_key — root-level (outside [app]) like in example.toml
       [whisper]      — model size and device
       [proxy]        — empty
-      [azure]        — empty (no Azure TTS required)
+      [azure]        — empty (we use Edge TTS, not Azure Speech)
       [siliconflow]  — empty
       [ui]           — upload-post disabled
     """
@@ -55,7 +59,7 @@ def write_mpt_config():
     pixabay_key  = os.environ.get("PIXABAY_API_KEY", "").strip()
     coverr_key   = os.environ.get("COVERR_API_KEY",  "").strip()
     gemini_key   = os.environ.get("GEMINI_API_KEY",  "").strip()
-    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip()
 
     # TOML array syntax for API key lists
     pexels_entry  = f'["{pexels_key}"]'  if pexels_key  else "[]"
@@ -109,26 +113,24 @@ upload_post_youtube_privacy_status = "public"
     config_path = mpt / "config.toml"
     config_path.write_text(config, encoding="utf-8")
     log.info("Wrote config.toml to %s", config_path)
-    log.info("  llm_provider=gemini  model=%s  pexels=%s",
-             gemini_model, "set" if pexels_key else "MISSING")
+    log.info("  llm_provider=gemini  model=%s  pexels=%s", gemini_model, "set" if pexels_key else "MISSING")
 
 
 def produce_video(topic: dict) -> Path:
-    """Run MPT CLI for one topic with minimal overrides.
+    """Run MPT CLI for one topic.
 
-    We let MoneyPrinterTurbo decide most stylistic parameters from config.toml.
-    To avoid Azure TTS completely, we explicitly pass a Gemini TTS voice name.
-
-    Passed CLI args:
+    We let MoneyPrinterTurbo handle the full pipeline. We only pass:
       - video_subject: topic title
       - video_script : full narration from ScriptWriter
       - video_terms  : comma-separated search keywords (optional)
-      - voice_name   : Gemini TTS voice (gemini:Zephyr-Female)
+      - voice_name   : Edge TTS voice (per-niche)
       - task_id      : used to locate outputs
     """
-    mpt     = _mpt_dir()
-    niche   = topic.get("niche", "ai_tech")
-    task_id = topic["hash"]
+    mpt         = _mpt_dir()
+    niche       = topic.get("niche", "ai_tech")
+    video_terms = (topic.get("video_terms") or "").strip()
+    voice       = NICHE_VOICES.get(niche, "en-US-GuyNeural")
+    task_id     = topic["hash"]
 
     cli_py = mpt / "cli.py"
     if not cli_py.exists():
@@ -140,29 +142,23 @@ def produce_video(topic: dict) -> Path:
     # Escape double-quotes and newlines in script/subject to avoid shell issues
     subject = topic["video_subject"].replace('"', "'")
     script  = topic["script"].replace('"', "'").replace("\n", " ")
-    terms   = (topic.get("video_terms") or "").strip()
 
     cmd = [
         sys.executable,
         str(cli_py),
-        "--video-subject",
-        subject,
-        "--video-script",
-        script,
-        "--voice-name",
-        DEFAULT_GEMINI_TTS_VOICE,
-        "--task-id",
-        task_id,
+        "--video-subject", subject,
+        "--video-script",  script,
+        "--voice-name",    voice,
+        "--task-id",       task_id,
     ]
-
-    if terms:
-        cmd.extend(["--video-terms", terms])
+    if video_terms:
+        cmd.extend(["--video-terms", video_terms])
 
     log.info("Running MPT CLI | task=%s | niche=%s", task_id, niche)
     log.info("  Subject: %s", subject[:80])
-    log.info("  Voice  : %s", DEFAULT_GEMINI_TTS_VOICE)
-    if terms:
-        log.info("  Terms  : %s", terms[:80])
+    log.info("  Voice  : %s", voice)
+    if video_terms:
+        log.info("  Terms  : %s", video_terms[:80])
 
     result = subprocess.run(
         cmd,
