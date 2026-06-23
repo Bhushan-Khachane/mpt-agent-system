@@ -164,18 +164,28 @@ def score_topic(t: dict) -> float:
     return base * min(t.get("score", 50), 1000) / 100
 
 
-def run_trend_scout() -> list:
-    log.info("DATA_DIR = %s", DATA_DIR)  # visible in Colab output for debug
+def run_trend_scout(niche: str | None = None) -> list:
+    """Run TrendScout for either all niches or a single niche.
+
+    If niche is provided, only that niche key from NICHES is used. This lets the
+    Colab notebook pass a manual niche instead of scouting everything.
+    """
+    log.info("DATA_DIR = %s", DATA_DIR)
     seen     = load_seen()
     existing = json.loads(QUEUE_FILE.read_text()) if QUEUE_FILE.exists() else []
     existing_titles = {t["title"].lower() for t in existing}
     all_topics: list = []
 
-    for niche, config in NICHES.items():
-        log.info("Scouting niche: %s", niche)
-        raw  = fetch_rss(config["rss"], niche)
-        raw += fetch_pytrends(config.get("pytrends_kw", []), niche)
-        raw += inject_fallback(niche, config, seen, existing_titles)
+    niches_to_run = [niche] if niche else list(NICHES.keys())
+    for n in niches_to_run:
+        config = NICHES.get(n)
+        if not config:
+            log.warning("Unknown niche: %s", n)
+            continue
+        log.info("Scouting niche: %s", n)
+        raw  = fetch_rss(config["rss"], n)
+        raw += fetch_pytrends(config.get("pytrends_kw", []), n)
+        raw += inject_fallback(n, config, seen, existing_titles)
         for t in raw:
             h = topic_hash(t["title"])
             if h not in seen:
